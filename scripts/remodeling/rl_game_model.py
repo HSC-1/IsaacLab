@@ -119,7 +119,7 @@ class Network(nn.Module):
         # mlp_in_shape = self.input_shape[0]
         # print(f"mlp_in_shape: {mlp_in_shape}")
         self.norm_input = RunningMeanStd(self.input_shape)
-        self.norm_value = RunningMeanStd(value_size)
+        self.norm_value = RunningMeanStd(value_size,)
         self.out_size = mlp_in_shape
         if 'mlp' in config:
             mlp_cfg:dict = config.get("mlp")
@@ -140,10 +140,16 @@ class Network(nn.Module):
         self.value_act = activation_dict[value_activation]
         self.mu =nn.Linear(self.out_size,self.actions_num)
         self.sigma =nn.Linear(self.out_size,self.actions_num)
-        # torch.nn.init.constant_(self.sigma.weight,0)
+        torch.nn.init.constant_(self.sigma.weight,0)
         self.mu_acti = activation_dict[mu_activation]
         self.sig_acti = activation_dict[sigma_activation]
-    
+    def norm_obs(self,obs):
+        with torch.no_grad():
+            return self.norm_input(obs)
+
+    def denorm_value(self,value):
+        with torch.no_grad():
+            return self.norm_value(value, denorm=True)
     def find_keys(self,d, target_key):
         results = []
         if isinstance(d, dict):
@@ -239,7 +245,7 @@ class Network(nn.Module):
     def forward(self, obs_dict):
         # breakpoint()
         obs = obs_dict['obs']
-        obs = self.norm_input(obs)
+        obs = self.norm_obs(obs)
         pre_act = obs_dict.get('action',0)
         # print(pre_act)
         # obs = obs_dict
@@ -253,35 +259,64 @@ class Network(nn.Module):
         out = self.mlp(out)
         # print(f"out shape: {out.shape}")
         value = self.value_act(self.value(out))
+        # print(f"value shape: {value.shape}")
+        # value = self.denorm_value(value)
+        # print(f"value_denorm shape: {value.shape}")
         mu = self.mu_acti(self.mu(out))
         # print(f"mu shape: {mu.shape}")
         # sigma = self.sig_acti(self.sigma(out))
         logstd = self.sig_acti(self.sigma(out))
         sigma = torch.exp(logstd)
-        # print(f"mu: {mu[0]} sigma: {sigma[0]}")
+        # print(f"sigma: {sigma}")
+        if (sigma <= 0).any():
+            print(f"sigma < 0 {sigma}")
         distr = torch.distributions.Normal(mu, sigma, validate_args=False)
         # print(f"distr: {distr}")
         # print(f"act shape: {act.shape}")
         # neglogp = -distr.log_prob(act).sum(dim=-1).unsqueeze(1)
         if isinstance(pre_act,torch.Tensor):
-            neglogp = self.neglogp(pre_act,mu,sigma,logstd).unsqueeze(1)
+            # neglogp = self.neglogp(pre_act,mu,sigma,logstd).unsqueeze(1)
+            # neglogp = -distr.log_prob(pre_act)
+            # print(f"neglogp shape: {neglogp.shape}")
+            if len(pre_act.shape) > 1:
+                neglogp = -distr.log_prob(pre_act).sum(dim=1)
+            else:
+                neglogp = -distr.log_prob(pre_act).sum()
+                
+            # print(f"neglogp shape: {neglogp.shape}")
             act = pre_act
+            dict_ = {
+            'mu' : mu,
+            'logstd' : logstd,
+            'value' : value,
+            'neglogp' : neglogp,
+            'entropy' : distr.entropy(),
+        }
         else:
             act = distr.sample()
-            neglogp = self.neglogp(act,mu,sigma,logstd).unsqueeze(1)
+            neglogp = -distr.log_prob(act).sum(dim=1)
+            # neglogp = -distr.log_prob(act)
+            dict_ = {
+            'mu' : mu,
+            'logstd' : logstd,
+            'value' : value, #norm_value(value),
+            # 'value' : self.denorm_value(value), #norm_value(value),
+            'action' : act,
+            'neglogp' : neglogp,
+        }
         
         # neglogp = -distr.log_prob(act).sum(dim=-1)
         # print(f" neglogp_shape {neglogp.shape}")
         # neglogp = torch.squeeze(-distr.log_prob(act).sum(dim=-1))
         # print(f"neglogp {neglogp[0]} neglogp_shape {neglogp.shape}")
-        dict_ = {
-            'mu' : mu,
-            'logstd' : logstd,
-            'value' : value,
-            'action' : act,
-            'neglogp' : neglogp,
-            'entropy' : distr.entropy().sum(dim=-1).unsqueeze(1),
-        }
+        # dict_ = {
+        #     'mu' : mu,
+        #     'logstd' : logstd,
+        #     'value' : value,
+        #     'action' : act,
+        #     'neglogp' : neglogp,
+        #     'entropy' : distr.entropy(),
+        # }
         return dict_ 
     
     def test(self):
@@ -308,6 +343,33 @@ class ExBuffer:
                 self.tensor_dict[i] = self.tensor_dict[i].transpose(0,1).reshape(-1,*self.tensor_dict[i].shape[2:])
             except:
                 print(f"swap error {i} {self.tensor_dict[i]}")
+
+    def split_tensor_n(self, n):
+        """
+        minibatch size 만큼 자르기 하나의 시나리오를 n개로 나누기
+        256 -> 4 : 64, 64, 64, 64
+        """
+        for key in self.tensor_dict.keys():
+            split_size = self.tensor_dict[key].shape[0] // n
+            try:
+                self.tensor_dict[key] = torch.stack([self.tensor_dict[key][i*split_size:(i+1)*split_size] for i in range(n)],dim=0)
+            except:
+                print(f"split error {key} {self.tensor_dict[key]}")
+        
+        # return [self.tensor_dict[key][i*split_size:(i+1)*split_size] for i in range(n)]
+
+class AdaptiveScheduler:
+    def __init__(self, kl_threshold = 0.008):
+        self.min_lr = 1e-6
+        self.max_lr = 1e-2
+        self.kl_threshold = kl_threshold
+    def update(self, current_lr, entropy_coef, kl_dist, **kwargs):
+        lr = current_lr
+        if kl_dist > (2.0 * self.kl_threshold):
+            lr = max(current_lr / 1.5, self.min_lr)
+        if kl_dist < (0.5 * self.kl_threshold):
+            lr = min(current_lr * 1.5, self.max_lr)
+        return lr, entropy_coef
 class MainModel():
 
     def __init__(self,env, config_params:dict):
@@ -322,6 +384,7 @@ class MainModel():
         self.env_name = config.get('env_name','CartPole-v1')
         self.env_config = config.get('env_config',{})
         self.env_info = env.get_env_info()
+        self.minibatch_length = config.get('minibatch_length',8)
         self.action_spce = self.env_info['action_space']
         self.horizon_length = config.get('horizon_length',256)
         self.minibatch_size = self.horizon_length // config.get('minibatch_size',64)
@@ -329,6 +392,8 @@ class MainModel():
         self.use_action_masks = config.get('use_action_masks', False)
         self.max_epoch = config.get('max_epochs',10000)
         self.score = 0
+        self.scheduler = AdaptiveScheduler(kl_threshold=0.01)
+        self.scaler = torch.GradScaler()
         algo_info = {'num_actors': self.num_actors, 
                      'horizon_length': self.horizon_length, 
                      'has_central_value': self.has_central_value,
@@ -338,6 +403,7 @@ class MainModel():
         self.net = Network(env_con=self.env_info, net_config=param_net).to(self.Device)
         print(self.net.parameters()) 
         self.obs = None
+        self.dones =torch.ones((self.env.num_envs,),dtype=torch.uint8,device=self.Device)
         self.optimizer = torch.optim.Adam(self.net.parameters(), lr=5e-4)
 
         # self.experience_buffer = ExperienceBuffer(env_info=self.env_info,algo_info=algo_info,device=Device)
@@ -354,10 +420,9 @@ class MainModel():
         scaled_action = action * d + m
         return scaled_action
     def train_epoch(self):
-        exbuf = ExBuffer(['entropy','neglogp','logstd','mu','obs','action','value','rewards','dones','returns'])
+        exbuf = ExBuffer(['neglogp','logstd','mu','obs','action','value','rewards','dones','returns'])
         # obs = self.env.reset()
         
-        # print(f"obs shape : {obs.shape}")
         for i in range(self.horizon_length):
             with torch.inference_mode():
                 output = self.net({"obs":self.obs})
@@ -365,16 +430,16 @@ class MainModel():
                 # print(f"output['action'] : {output['action'].shape}")
                 
             exbuf.update("obs",self.obs) #train에서 초기화 진행
-            # print(f"output: {output['action']}")
-            # print(f"output: {self.prepare_action(output['action'])}")
-            self.obs,rew,dones,_ = self.env.step(self.prepare_action(output["action"]))
+            exbuf.update("dones",self.dones.unsqueeze(1))
+            self.obs,rew,self.dones,info = self.env.step(self.prepare_action(output["action"]))
             # print(f"rew shape: {rew.shape}, done shape: {dones.shape}")
             # print(f"output['value'] : {output['value'].shape}")
+            if 'time_outs' in info:
+                rew += self.gamma*output["value"].squeeze(1)*info['time_outs'].to(self.Device)
             for i in output.keys():
                 exbuf.update(i,output[i])
             # exbuf.update("actions",output['action'])
-            exbuf.update("rewards",rew.unsqueeze(1))
-            exbuf.update("dones",dones.unsqueeze(1))
+            exbuf.update("rewards",0.6*rew.unsqueeze(1))
 
         for i in exbuf.tensor_dict.keys():
             try:
@@ -391,43 +456,74 @@ class MainModel():
         rew = exbuf.tensor_dict['rewards']
         # print(f"rew {rew.shape}")
         
-        adv = self.discount_values(dones.unsqueeze(1).float(), last_value, dons, val, rew)
+        adv = self.discount_values(self.dones.unsqueeze(1).float(), last_value, dons, val, rew)
         # print(f"val shape: {val.shape}, val : {val[0]}")
         # print(f"adv shape: {adv.shape}, val : {adv[0]}")
         ret = adv + val
         exbuf.tensor_dict['returns'] = ret
         exbuf.tensor_dict['advantages'] = adv
+        exbuf.tensor_dict['advantages'] = (adv - adv.mean())/(adv.std()+1e-8) # advantage normalization
+        
         # self.value_loss(val,)
         exbuf.swap_flatten()
+
+        #value normalization
+        # self.net.norm_value.train()
+        # exbuf.tensor_dict['value'] = self.net.norm_value(exbuf.tensor_dict['value'])
+        # exbuf.tensor_dict['returns'] = self.net.norm_value(exbuf.tensor_dict['returns'], denorm=False)
+        # self.net.norm_value.eval()
+
+        exbuf.split_tensor_n(self.minibatch_length) 
         # print(torch.sum(exbuf.tensor_dict['advantages'],axis=1).shape)
         # print(exbuf.tensor_dict['advantages'].shape)
-        exbuf.tensor_dict['advantages'] = (exbuf.tensor_dict['advantages'] - exbuf.tensor_dict['advantages'].mean())/(exbuf.tensor_dict['advantages'].std()+1e-8)
+        # exbuf.tensor_dict['advantages'] = (exbuf.tensor_dict['advantages'] - exbuf.tensor_dict['advantages'].mean())/(exbuf.tensor_dict['advantages'].std()+1e-8)
         # print(exbuf.tensor_dict['advantages'].shape)
 
         # print(f"exbuf adv shape : {torch.sum(exbuf.tensor_dict['advantages'],1)[0],exbuf.tensor_dict['advantages'][0]}")
         # print()
         # print(f'exbuf.tensor_dict[entropy] shape : {exbuf.tensor_dict["advantages"].shape}')
-        with torch.autocast(device_type="cuda"):
+        for i in range(self.minibatch_length):
+            with torch.autocast(device_type="cuda"):
             # print(exbuf.tensor_dict["obs"].shape)
-            output = self.net({"obs":exbuf.tensor_dict["obs"],'action':exbuf.tensor_dict['action']})
-        
-            # print(f"{key} : {exbuf.tensor_dict[key].shape}")
-            a_loss = self.actor_loss(exbuf.tensor_dict["neglogp"],output["neglogp"],exbuf.tensor_dict["advantages"],self.e_clip)
-            a_loss2 = self.actor_loss2(exbuf.tensor_dict["neglogp"],output["neglogp"],exbuf.tensor_dict["advantages"],self.e_clip)
-            v_loss = self.value_loss(exbuf.tensor_dict["value"],output["value"],self.e_clip,exbuf.tensor_dict["returns"])
-            # b_loss = self.bound_loss(exbuf.tensor_dict["mu"])
-            # print(b_loss)
-            # print(f"a_loss : {a_loss.mean()} a_loss2 : {a_loss2.mean()} ")
-            # print(f"a_loss : {a_loss} v_loss : {v_loss} b_loss : {b_loss} entropy : {output['entropy']}")
-            loss = a_loss2 + 2 * v_loss #- output["entropy"] * 0.01 #+ b_loss*0.0001
-            # print(f"loss {loss.mean()}, a_loss : {a_loss.mean()}, v_loss : {v_loss.mean()}, entropy : {output['entropy'].mean()}")
-            # print(f"loss : {loss.mean()}")
-            self.loss = loss.mean()
+                output = self.net({"obs":exbuf.tensor_dict["obs"][i],'action':exbuf.tensor_dict['action'][i]})
+            
+                
+                # a_loss = self.actor_loss(exbuf.tensor_dict["neglogp"][i],output["neglogp"],exbuf.tensor_dict["advantages"][i],self.e_clip)
+                a_loss2 = self.actor_loss2(exbuf.tensor_dict["neglogp"][i],output["neglogp"],exbuf.tensor_dict["advantages"][i],self.e_clip)
+                v_loss = self.value_loss(exbuf.tensor_dict["value"][i],output["value"],self.e_clip,exbuf.tensor_dict["returns"][i])
+                # b_loss = self.bound_loss(exbuf.tensor_dict["mu"][i])
+                # print(f"output[entropy].mean() : {output['entropy'].mean()}")
+                # print(f"output[neglogp].mean() : {output['neglogp'].mean()}")
+                # print(f"a_loss : {a_loss.mean()} a_loss2 : {a_loss2.mean()} ")
+                # print(f"a_loss : {a_loss} v_loss : {v_loss} b_loss : {b_loss} entropy : {output['entropy']}")
+                loss = a_loss2 + 2 * v_loss - output["neglogp"].mean() * 0.05 #+ b_loss*0.0001
+                # print(f"loss {loss.mean()}, a_loss : {a_loss2.mean()}, v_loss : {v_loss.mean()}, entropy : {output['entropy'].mean()}")
+                # print(f"loss : {loss.mean()}")
+                self.loss = loss.mean()
             # print(f"loss : {self.loss}")
-            self.optimizer.zero_grad()
-        self.score = exbuf.tensor_dict["returns"].mean()
-        scaler = torch.GradScaler()
-        scaler.scale(self.loss).backward()
+            # self.loss.backward()
+            # self.optimizer.step()
+            self.score = exbuf.tensor_dict["returns"][i].mean()
+            # # scaler = torch.GradScaler()
+            # self.optimizer.zero_grad()
+            for param in self.net.parameters():
+                param.grad = None
+
+            # lr 조절
+            # with torch.no_grad():
+            #     kl_dist = torch.mean(exbuf.tensor_dict["neglogp"][i] - output["neglogp"])
+            #     # print(f"kl_dist : {kl_dist}") 
+            # lr, _ = self.scheduler.update(self.optimizer.param_groups[0]['lr'], 0.01, kl_dist.item())   
+            # for param_group in self.optimizer.param_groups:
+            #     param_group['lr'] = lr
+
+            #backward with scaler
+            self.scaler.scale(self.loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1.0)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            # self.net.norm_input.eval()
         # scaler.step(torch.optim.Adam(self.net.parameters(), lr=3e-4))
        
         # after backward & before optimizer step
@@ -440,8 +536,6 @@ class MainModel():
         # param_norm = sum(p.norm().item() for p in self.net.parameters())
         # print("param_norm:", param_norm)
         
-        scaler.step(self.optimizer)
-        scaler.update()
 
 
     def discount_values(self, fdones, last_extrinsic_values, mb_fdones, mb_extrinsic_values, mb_rewards):
@@ -468,6 +562,7 @@ class MainModel():
     def smooth_clamp(self,min,max,x):
         return 1/(1 + torch.exp((-(x-min)/(max-min)+0.5)*4)) * (max-min) + min
     def actor_loss2(self,old_neglogp, neglogp, adv, e_clip):
+        
         old_neg = old_neglogp.view(-1)
         new_neg = neglogp.view(-1)
         advantage = adv.view(-1)
@@ -475,37 +570,27 @@ class MainModel():
         # compute logprobs from neglogp
         old_logp = -old_neg
         new_logp = -new_neg
-
+        # print(f"old_logp : {old_logp.shape}, new_logp : {new_logp.shape}, advantage : {advantage.shape}")
         ratio = torch.exp(new_logp - old_logp)  # p_new / p_old
-
+        # print(f"ratio : {ratio}")
         surr1 = ratio * advantage
         surr2 = torch.clamp(ratio, 1.0 - e_clip, 1.0 + e_clip) * advantage
 
         # PPO loss is negative of clipped surrogate (we want to maximize surrogate)
-        loss = -torch.min(surr1, surr2)
+        loss = -torch.min(surr1, surr2).mean()
 
         # return per-sample loss (keep dims consistent)
         return loss.view(-1, 1)
-    def actor_loss(self,old_neglogp, neglogp, adv, e_clip):
-        ratio = torch.exp(old_neglogp - neglogp)
-        # print(e_clip)
-        # print(ratio)
-        surr1 = adv * neglogp
-        surr2 = adv * torch.clamp(ratio, 1.0 - e_clip, 1.0 + e_clip)
-        a_loss = torch.max(-surr1, -surr2)
-        a = neglogp * adv
-        a_loss = torch.max(-adv * ratio,-adv * self.smooth_clamp(1.0 - e_clip, 1.0 + e_clip, ratio))
-        # print(f"a {a.mean()} a_loss {a_loss.mean()}")
-        return a
+
     
     def value_loss(self, value_preds_batch, values, curr_e_clip, return_batch):
         value_pred_clipped = value_preds_batch + \
                 (values - value_preds_batch).clamp(-curr_e_clip, curr_e_clip)
         value_losses = (values - return_batch)**2
         value_losses_clipped = (value_pred_clipped - return_batch)**2
-        c_loss = torch.max(value_losses,value_losses_clipped)
-        c = (return_batch-values)**2
-        return c
+        c_loss = torch.maximum(value_losses, value_losses_clipped)
+        # c = (return_batch-values)**2
+        return c_loss.mean()
     
     def save(self, path):
         torch.save(self.net.state_dict(), path)
@@ -513,7 +598,7 @@ class MainModel():
     def train(self):
         epoch_num = 0
         self.obs = self.env.reset()
-        while epoch_num < self.max_epoch and self.score < self.ending:
+        while epoch_num <= self.max_epoch and self.score <= self.ending:
             last_score = self.score
             self.train_epoch()
             if last_score >= self.ending:
@@ -526,7 +611,20 @@ class MainModel():
                     self.save(f"{self.env_name}_epoch{epoch_num}.pth")
                     print(f"Model saved at epoch {epoch_num}!")
             epoch_num += 1
-        pass 
+        pass
+    def load_play(self):
+        self.net.load_state_dict(torch.load(f"{self.env_name}_epoch1000.pth"))
+        obs = self.env.reset()
+        dones = torch.ones((self.env.num_envs,),dtype=torch.uint8,device=self.Device)
+        step = 0
+        while step < 1000:
+            with torch.inference_mode():
+                output = self.net({"obs":obs})
+                # print(f"output['value'] : {output['value'].shape}")
+                obs,rew,dones,_ = self.env.step(self.prepare_action(output["action"]))
+                # print(f"obs {obs.shape},rew{rew.shape},done{dones.shape}")
+            step += 1
+        pass
 
 def main():
     task = "Isaac-Cartpole-RGB-v0"
@@ -541,15 +639,16 @@ def main():
     num_actors = cfg1['params']["config"].get('num_actors',1)
     env_config = cfg1['params']["config"].get('env_config',{})
     # env.step()
-    print(env.action_space)
-    print(env.observation_space)
+    # print(env.action_space)
+    # print(env.observation_space)
     env = RlGamesVecEnvWrapper(env, "cuda", clip_obs=math.inf, clip_actions=1.0)
     net = Network(env.get_env_info(),cfg1['params']['network']).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     obs = env.reset()
     model = MainModel(env,cfg1['params'])
     # model.train_epoch()
-    model.train()
 
+    # model.train()
+    model.load_play()
     # print(model.experience_buffer)
     # print(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     horizon = cfg1["params"]["config"]["horizon_length"]
@@ -562,6 +661,11 @@ def main():
     # 사람의 학습은 자면서 진행 그동한 경험으로
     # 꿈에서 보는 것들은 뇌에서 만들어 낸것 dreamer의 이미지 표현도 마찬가지 
 
+    """
+    
+    value 다시 보기 common.py에 prepare에 있음 훈련도 진행하는듯
+    entropy loss 확인하기
+    """
 
     step = 0
     # breakpoint()
