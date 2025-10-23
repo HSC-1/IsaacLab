@@ -1174,6 +1174,13 @@ def reset_scene_to_default(env: ManagerBasedEnv, env_ids: torch.Tensor):
         # obtain default and set into the physics simulation
         nodal_state = deformable_object.data.default_nodal_state_w[env_ids].clone()
         deformable_object.write_nodal_state_to_sim(nodal_state, env_ids=env_ids)
+    for rigid_objs in env.scene.rigid_object_collections.values():
+        default_state = rigid_objs.data.default_object_state[env_ids].clone()
+        # print(default_state[:,:, 0:3].size())
+        # print(default_state.size())
+        # print(env.scene.env_origins[env_ids].unsqueeze(1).expand(-1,20,-1).size())
+        default_state[:, :,0:3] += env.scene.env_origins[env_ids].unsqueeze(1).expand(-1,20,-1)
+        rigid_objs.write_object_state_to_sim(default_state, env_ids=env_ids)
 
 
 class randomize_visual_texture_material(ManagerTermBase):
