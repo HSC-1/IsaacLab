@@ -72,7 +72,7 @@ class StoneSteelSceneCfg(InteractiveSceneCfg):
                 # init_state=RigidObjectCfg.InitialStateCfg(pos=(math.cos(i*2*math.pi/20)*math.sin(i*2*math.pi/20),
                 #                                                math.sin(i*2*math.pi/20)*2,2))
                 init_state=RigidObjectCfg.InitialStateCfg(pos=(torch.randn(1).item()*0.2,
-                                                               torch.randn(1).item()*2,1.5))
+                                                               torch.randn(1).item()*2,1.42))
             )
             for i in range(20)
         }
@@ -136,6 +136,14 @@ class EventCfg:
             "asset_cfg": SceneEntityCfg("mush2"),
         },
     )
+    # for i in range(20):
+    test_event= EventTerm(
+        func=mdp.randomize_rigid_collection_scale,
+        mode="prestartup",
+        params={
+            "asset_cfg": SceneEntityCfg("mushs"),
+            "scale_range": (5, 11),
+        })
     reset_base = EventTerm(
         func=mdp.reset_root_state_uniform,
         mode="reset",
