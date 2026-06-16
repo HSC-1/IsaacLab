@@ -15,10 +15,32 @@ from isaaclab.utils import configclass
 from isaaclab.assets import RigidObject, RigidObjectCfg, RigidObjectCollectionCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from tools.test_settings import ISAACLAB_PATH
-import isaaclab_tasks.manager_based.classic.cartpole.mdp as mdp
+import isaaclab_tasks.manager_based.classic.stonesteel.mdp as mdp
 
 MINIMALBOT_CONFIG = ArticulationCfg(
-    spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_PATH}/source/stonesteel/Minimalbot.usd",scale=(1.1,1.1,1.1)),
+    spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_PATH}/source/stonesteel/Minimalbot.usd",
+    # spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_PATH}/source/stonesteel/minbot2.usd",
+                               scale=(1.1,1.1,1.1),
+                               activate_contact_sensors=True,),
+    actuators={
+        "FL_actuator": ImplicitActuatorCfg(joint_names_expr=["front_left_joint"], damping=0, stiffness=None),
+        "FR_actuator": ImplicitActuatorCfg(joint_names_expr=["front_right_joint"], damping=0, stiffness=None),
+        "RL_actuator": ImplicitActuatorCfg(joint_names_expr=["reer_left_joint"], damping=0, stiffness=None),
+        "RR_actuator": ImplicitActuatorCfg(joint_names_expr=["reer_right_joint"], damping=0, stiffness=None),
+               
+               },
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 2.0),
+        rot=(0.5,0.5,0.5,0.5),
+        # rot=(0.7071,0.0,0.0,0.7071),
+        # rot=(1.0,0.0,0.0,0.0),
+    ),
+)
+MINIMALBOT2_CONFIG = ArticulationCfg(
+    # spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_PATH}/source/stonesteel/Minimalbot.usd",
+    spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_PATH}/source/stonesteel/minbot2.usd",
+                               scale=(0.1,0.1,0.1),
+                               activate_contact_sensors=True,),
     actuators={
         "FL_actuator": ImplicitActuatorCfg(joint_names_expr=["front_left_joint"], damping=0, stiffness=None),
         "FR_actuator": ImplicitActuatorCfg(joint_names_expr=["front_right_joint"], damping=0, stiffness=None),
@@ -43,16 +65,16 @@ class StoneSteelSceneCfg(InteractiveSceneCfg):
         prim_path="/World/ground",
         spawn=sim_utils.GroundPlaneCfg(size=(100.0, 100.0)),
     )
-    mush = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/mush",
-        spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_PATH}/source/stonesteel/mushroom.usd",scale=(10,10,10)),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(1,0,0))
-    )
-    mush2 = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/mush2",
-        spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_PATH}/source/stonesteel/mushroom2.usd",scale=(0.1,0.1,0.1)),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(1,1,0))
-    )
+    # mush = RigidObjectCfg(
+    #     prim_path="{ENV_REGEX_NS}/mush",
+    #     spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_PATH}/source/stonesteel/mushroom.usd",scale=(10,10,10)),
+    #     init_state=RigidObjectCfg.InitialStateCfg(pos=(1,0,0))
+    # )
+    # mush2 = RigidObjectCfg(
+    #     prim_path="{ENV_REGEX_NS}/mush2",
+    #     spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_PATH}/source/stonesteel/mushroom2.usd",scale=(0.1,0.1,0.1)),
+    #     init_state=RigidObjectCfg.InitialStateCfg(pos=(1,1,0))
+    # )
     frame = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/frame",
         spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_PATH}/source/stonesteel/frame2.usd",scale=(0.1,0.1,0.1)),
@@ -68,28 +90,44 @@ class StoneSteelSceneCfg(InteractiveSceneCfg):
         rigid_objects={
             f"mushroom_{i}": RigidObjectCfg(
                 prim_path=f"{{ENV_REGEX_NS}}/mushroom_{i}",
-                spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_PATH}/source/stonesteel/mushroom.usd",scale=(10,10,10)),
+                spawn=sim_utils.UsdFileCfg(
+                    usd_path=f"{ISAACLAB_PATH}/source/stonesteel/mushroom.usd",
+                    scale=(10,10,10),
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                        sleep_threshold=100000
+                    )),
                 # init_state=RigidObjectCfg.InitialStateCfg(pos=(math.cos(i*2*math.pi/20)*math.sin(i*2*math.pi/20),
                 #                                                math.sin(i*2*math.pi/20)*2,2))
-                init_state=RigidObjectCfg.InitialStateCfg(pos=(torch.randn(1).item()*0.2,
-                                                               torch.randn(1).item()*2,1.42))
+                init_state=RigidObjectCfg.InitialStateCfg(pos=(torch.randn(1).item()*0.18,
+                                                               torch.randn(1).item()*1.8,1.42))
+                # init_state=RigidObjectCfg.InitialStateCfg(pos=(0,
+                #                                                0,1.42))
             )
             for i in range(20)
         }
+    )
+    binbed = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/target_bed",
+        spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_PATH}/source/stonesteel/binbed.usd",scale=(0.1,0.1,0.1)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(1.6,
+                                                        3,1.0))
     )
     # bed = RigidObjectCfg(
     #     prim_path="{ENV_REGEX_NS}/bed",
     #     spawn=sim_utils.UsdFileCfg(usd_path=f"{ISAACLAB_PATH}/source/stonesteel/bed.usd",scale=(0.1,0.1,0.1)),
     #     init_state=RigidObjectCfg.InitialStateCfg(pos=(1,1,0))
     # )
-
     # lights
     light = AssetBaseCfg(
         prim_path="/World/light",
         # spawn=sim_utils.DistantLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
         spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
     )
-    robot: ArticulationCfg = MINIMALBOT_CONFIG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    # robot: ArticulationCfg = MINIMALBOT_CONFIG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    robot: ArticulationCfg = MINIMALBOT2_CONFIG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    # contact = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/front_.*",filter_prim_paths_expr=["/World/envs/env_0/frame/frame/bed","/World/envs/env_0/frame/frame/bed_01"],track_air_time=False)
+    # contact1 = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*",filter_prim_paths_expr=["{ENV_REGEX_NS}/frame/frame/Cylinder_007" for _ in range(5)],track_air_time=False)
+    # contact = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*",filter_prim_paths_expr=["/World/ground"],track_air_time=False)
     body_cam: TiledCameraCfg = TiledCameraCfg(
         prim_path="{ENV_REGEX_NS}/Robot/Camera",
         width=100,
@@ -120,22 +158,22 @@ class ObservationsCfg:
 class EventCfg:
     """Configuration for events."""
 
-    randomize_mush1_scale = EventTerm(
-        func=mdp.randomize_rigid_body_scale,
-        mode="prestartup",
-        params={
-            "scale_range": {"x": (5, 15), "y": (5, 15), "z": (5, 15)},
-            "asset_cfg": SceneEntityCfg("mush"),
-        },
-    )
-    randomize_mush2__scale = EventTerm(
-        func=mdp.randomize_rigid_body_scale,
-        mode="prestartup",
-        params={
-            "scale_range": (0.05, 0.15),
-            "asset_cfg": SceneEntityCfg("mush2"),
-        },
-    )
+    # randomize_mush1_scale = EventTerm(
+    #     func=mdp.randomize_rigid_body_scale,
+    #     mode="prestartup",
+    #     params={
+    #         "scale_range": {"x": (5, 15), "y": (5, 15), "z": (5, 15)},
+    #         "asset_cfg": SceneEntityCfg("mush"),
+    #     },
+    # )
+    # randomize_mush2__scale = EventTerm(
+    #     func=mdp.randomize_rigid_body_scale,
+    #     mode="prestartup",
+    #     params={
+    #         "scale_range": (0.05, 0.15),
+    #         "asset_cfg": SceneEntityCfg("mush2"),
+    #     },
+    # )
     # for i in range(20):
     test_event= EventTerm(
         func=mdp.randomize_rigid_collection_scale,
@@ -148,6 +186,14 @@ class EventCfg:
         func=mdp.reset_root_state_uniform,
         mode="reset",
         params={"pose_range": {}, "velocity_range": {}},
+    )
+    prereset_randomize_position = EventTerm(
+        func=mdp.randomize_rigid_collection_default_state,
+        mode="startup",
+        params={
+            "asset_cfg" : SceneEntityCfg("mushs"),
+            "position_range":{"x":(-0.2,0.2),"y":(-4.9,4.9)},
+        }
     )
     reset_mush = EventTerm(
         func=mdp.reset_scene_to_default,
@@ -175,15 +221,17 @@ class RewardsCfg:
     # (1) Constant running reward
     alive = RewTerm(func=mdp.is_alive, weight=1.0)
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=1.0)
+    target_bed_mushs = RewTerm(func=mdp.target_distance,weight=-1.0,params={"target_name":"binbed"})
 @configclass
 class TerminationsCfg:
     """Termination terms for the MDP."""
 
     # (1) Time out
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
+    
 @configclass
 class StoneSteelEnvCfg(ManagerBasedRLEnvCfg):
-    scene: StoneSteelSceneCfg = StoneSteelSceneCfg(num_envs=3,env_spacing=4.0, replicate_physics=False)
+    scene: StoneSteelSceneCfg = StoneSteelSceneCfg(num_envs=2,env_spacing=4.0, replicate_physics=False)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     events: EventCfg = EventCfg()

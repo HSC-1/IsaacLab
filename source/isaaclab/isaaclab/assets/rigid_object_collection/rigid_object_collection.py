@@ -116,6 +116,10 @@ class RigidObjectCollection(AssetBase):
     """
 
     @property
+    def prim_paths(self) -> list:
+        return self._prim_paths
+    
+    @property
     def data(self) -> RigidObjectCollectionData:
         return self._data
 

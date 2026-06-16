@@ -63,7 +63,7 @@ def design_scene():
         prim_path="/World/Origin.*/Cube",
         spawn=sim_utils.MeshCuboidCfg(
             size=(0.2, 0.2, 0.2),
-            deformable_props=sim_utils.DeformableBodyPropertiesCfg(rest_offset=0.0, contact_offset=0.001),
+            deformable_props=sim_utils.DeformableBodyPropertiesCfg(rest_offset=0.0, contact_offset=0.0001),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.1, 0.0)),
             physics_material=sim_utils.DeformableBodyMaterialCfg(poissons_ratio=0.4, youngs_modulus=1e5),
         ),
@@ -122,10 +122,11 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Deformab
 
         # update the kinematic target for cubes at index 0 and 3
         # we slightly move the cube in the z-direction by picking the vertex at index 0
-        nodal_kinematic_target[[0, 3], 0, 2] += 0.001
+        nodal_kinematic_target[[0,1, 3], 0, 2] += 0.001
         # set vertex at index 0 to be kinematically constrained
         # 0: constrained, 1: free
-        nodal_kinematic_target[[0, 3], 0, 3] = 0.0
+        
+        nodal_kinematic_target[[0,1, 2,3], 0, 3] = 0.0
         # write kinematic target to simulation
         cube_object.write_nodal_kinematic_target_to_sim(nodal_kinematic_target)
 
@@ -140,6 +141,7 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Deformab
         cube_object.update(sim_dt)
         # print the root position
         if count % 50 == 0:
+            print(nodal_kinematic_target.shape)
             print(f"Root position (in world): {cube_object.data.root_pos_w[:, :3]}")
 
 

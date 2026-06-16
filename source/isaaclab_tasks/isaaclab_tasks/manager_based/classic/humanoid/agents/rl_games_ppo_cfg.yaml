@@ -24,7 +24,7 @@ params:
         sigma_init:
           name: const_initializer
           val: 0
-        fixed_sigma: True
+        fixed_sigma: False
     mlp:
       units: [400, 200, 100]
       activation: elu
@@ -34,6 +34,26 @@ params:
         name: default
       regularizer:
         name: None
+    # cnn:
+    #   type: conv2d
+    #   activation: relu
+    #   initializer:
+    #       name: default
+    #   regularizer:
+    #     name: None
+    #   convs:
+    #     - filters: 32
+    #       kernel_size: 3
+    #       strides: 1
+    #       padding: 0
+    #     - filters: 64
+    #       kernel_size: 3
+    #       strides: 1
+    #       padding: 0
+    #     - filters: 64
+    #       kernel_size: 3
+    #       strides: 1
+    #       padding: 0
 
   load_checkpoint: False # flag which sets whether to load the checkpoint
   load_path: '' # path to the checkpoint to load
@@ -47,7 +67,7 @@ params:
     ppo: True
     mixed_precision: True
     normalize_input: True
-    normalize_value: True
+    normalize_value: False
     value_bootstrap: True
     num_actors: -1
     reward_shaper:
@@ -67,6 +87,7 @@ params:
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 32
+    minibatch_length: 5
     minibatch_size: 32768
     mini_epochs: 5
     critic_coef: 4

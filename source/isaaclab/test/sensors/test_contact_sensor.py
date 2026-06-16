@@ -271,7 +271,7 @@ def test_cube_stack_contact_filtering(setup_simulation, device, num_envs):
             track_pose=True,
             debug_vis=False,
             update_period=0.0,
-            filter_prim_paths_expr=["{ENV_REGEX_NS}/Cube_1"],
+            filter_prim_paths_expr=["{ENV_REGEX_NS}/Cube_1","/World/ground"],
         )
         scene = InteractiveScene(scene_cfg)
 

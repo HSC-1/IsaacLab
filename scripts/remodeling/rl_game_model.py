@@ -41,11 +41,14 @@ from rl_games.common.experience import ExperienceBuffer
 from rl_games.algos_torch.models import BaseModel, BaseModelNetwork
 import gymnasium as gym
 import math
+from isaaclab.envs import ManagerBasedRLEnv
 from isaaclab_rl.rl_games import RlGamesVecEnvWrapper
 from dic_model import DiC_S
 from rl_games.common import common_losses
 from rl_games.algos_torch.torch_ext import numpy_to_torch_dtype_dict
 from isaaclab_tasks.utils import get_checkpoint_path, load_cfg_from_registry, parse_env_cfg
+
+from isaaclab.sensors import ContactSensor
 #vec_env 가져오기
 #vec_env에서 바로 넣나 dataset으로 만들어 넣나 차이가 있나 없어보임
 #experience_buffer로 horizon == play_step()
@@ -82,7 +85,7 @@ class Network(nn.Module):
         # breakpoint()
 
         config = net_config
-        self.value_normalize = config.get('value_normalize', False)
+        self.value_normalize = config.get('normalize_value', False)
         # self.actions_num  = config.get('action_shape', 5)
         # self.input_shape = config.get('obs_shape', [1])
         self.mlp_units = config["mlp"].get("units",[32,32])
@@ -383,7 +386,7 @@ class MainModel():
         self.has_central_value = config.get('central_value_config', None) is not None
         self.use_action_masks = config.get('use_action_masks', False)
         self.max_epoch = config.get('max_epochs',10000)
-        self.value_normalize = config.get('value_normalize', False)
+        self.value_normalize = config.get('normalize_value', False)
         # self.score = torch_ext.AverageMeter(self.env_info.get('value_size',1),100)
         self.score = -1000
         self.scheduler = AdaptiveScheduler(kl_threshold=0.01)
@@ -434,19 +437,13 @@ class MainModel():
             exbuf.update("dones",self.dones.unsqueeze(1))
             self.obs,rew,self.dones,info = self.env.step(output["action"])
             # self.obs,rew,self.dones,info = self.env.step(self.prepare_action(output["action"]))
-            # self.obs,rew,self.dones,info = self.env.step(torch.zeros_like(output["action"]))
             rew = rew.to(self.Device)
             self.dones = self.dones.to(self.Device)
-            # self.obs,rew,self.dones,info = self.env.step(output["action"])
-            # print(f"rew shape: {rew.shape}, done shape: {dones.shape}")
-            # print(f"output['value'] : {output['value'].shape}")
             if 'time_outs' in info: #value bootstraping
                 rew += self.gamma*output["value"].squeeze(1)*info['time_outs'].to(self.Device)
             for key in output.keys():
                 exbuf.update(key,output[key])
-            # exbuf.update("actions",output['action'])
             exbuf.update("rewards",0.6*rew.unsqueeze(1))
-            # print(f'rew {i}: {rew.mean()} ,value : {output["value"].mean()}')
 
         for i in exbuf.tensor_dict.keys():
             try:
@@ -470,12 +467,6 @@ class MainModel():
         print(f"adv :{adv.mean()}, value : {val.mean()}, reward: {rew.mean()}, score : {self.score}")
         exbuf.tensor_dict['returns'] = ret
         self.net.train()
-        # exbuf.tensor_dict['advantages'] = adv
-        # adv = ret - val
-        # # print(adv.shape)
-        # adv = torch.sum(adv,axis =2)
-        # print(exbuf.tensor_dict['advantages'].shape)
-        # print(exbuf.tensor_dict['advantages'])
         exbuf.tensor_dict['advantages'] = (adv - adv.mean())/(adv.std()+1e-8) # advantage normalization
         
         # print(f"adv shape : {exbuf.tensor_dict['advantages'].shape}")
@@ -483,11 +474,11 @@ class MainModel():
         exbuf.swap_flatten()
 
         #value normalization
-        # if self.value_normalize:
-        #     # self.net.norm_value.train()
-        #     exbuf.tensor_dict['value'] = self.net.norm_value(exbuf.tensor_dict['value'])
-        #     exbuf.tensor_dict['returns'] = self.net.norm_value(exbuf.tensor_dict['returns'], denorm=False)
-        #     # self.net.norm_value.eval()
+        if self.value_normalize:
+            self.net.norm_value.train()
+            exbuf.tensor_dict['value'] = self.net.norm_value(exbuf.tensor_dict['value'])
+            exbuf.tensor_dict['returns'] = self.net.norm_value(exbuf.tensor_dict['returns'], denorm=False)
+            self.net.norm_value.eval()
 
         exbuf.split_tensor_n(self.minibatch_length) 
         
@@ -512,18 +503,8 @@ class MainModel():
                 self.loss = loss
                 # print(f"a_loss2 : {a_loss2}, v_loss : {v_loss}, loss : {self.loss}, value : {output['value'].mean()}, return : {exbuf.tensor_dict['returns'][i].mean()}")
                     # print(f"loss {i} : {self.loss.item()}")
-                # self.loss.backward()
-                # lr 조절
-                # linear decay
-                # self.step += 1
-                # lr = 5e-4 * (1 - self.step / self.max_step + 1e-6)
-                # cosine decay
-                # lr = 0.5 * (1 + math.cos(math.pi * self.step / self.max_step)) * 3e-4
-
                 # scaler.step(torch.optim.Adam(self.net.parameters(), lr=3e-4))
-                # self.optimizer.step()
                 self.score = exbuf.tensor_dict["returns"][i].mean()
-                # self.optimizer.zero_grad()
                 for param in self.net.parameters():
                     param.grad = None
                 self.optimizer.zero_grad()
@@ -532,7 +513,6 @@ class MainModel():
                 torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1.0)
                 self.optimizer.step()
 
-            # if self.step >= 1000:
                 # print(f'mu {old_mu}')
                 with torch.no_grad():
                     kl_dist = torch_ext.policy_kl(mu.detach(),sigma.detach(),old_mu.detach(),old_sigma.detach(),True)
@@ -694,32 +674,45 @@ class MainModel():
                 # obs,rew,dones,_ = self.env.step(output["action"])
                 # print(f"obs {obs.shape},rew{rew.shape},done{dones.shape}")
             step += 1
+
+            # self.env.unwrapped.scene["contact"]._set_debug_vis_impl(True)
+            # if step == 100:
+            #     sensor : ContactSensor = self.env.unwrapped.scene["contact"]
+            #     print(self.env.unwrapped.scene["contact"].contact_physx_view.filter_paths)
+            #     print(sensor.body_names)
+                # print(self.env.unwrapped.scene["contact"].data)
+            # print(env.scene["contact"].contact_physx_view)
         pass
 
 def main():
     task = "Isaac-Cartpole-v0"
     task = "Isaac-Humanoid-v0"
+    task = "SST_base"
     cfg = load_cfg_from_registry(task,"env_cfg_entry_point")
-    cfg1:dict = load_cfg_from_registry(task,"rl_games_cfg_entry_point")
+    try:
+        cfg1:dict = load_cfg_from_registry(task,"rl_games_cfg_entry_point")
+    except:
+        cfg1:dict = load_cfg_from_registry(task,"ppo_entry_point")
+
     cfg.seed = 42
-    env = gym.make(task,cfg=cfg)
+    # env = gym.make(task,cfg=cfg)
+    env = ManagerBasedRLEnv(cfg=cfg)
+
     # print(cfg1['params']["config"])
     #시작 포인트 play step 에서 저장될때까지 shape는 똑가틍ㄴ데 그이후 왜 달라지는지 확인하기
-
-    env_name = cfg1['params']["config"].get('env_name',task)
-    num_actors = cfg1['params']["config"].get('num_actors',1)
-    env_config = cfg1['params']["config"].get('env_config',{})
+    # env.reset()
+    # while True:
+    #     print(env.action_space.shape)
+    #     env.step(torch.randn_like(env.action_manager.action))
+    # env_name = cfg1['params']["config"].get('env_name',task)
+    # num_actors = cfg1['params']["config"].get('num_actors',1)
+    # env_config = cfg1['params']["config"].get('env_config',{})
     # env.step()
     # print(env.action_space)
     # print(env.observation_space)
     env = RlGamesVecEnvWrapper(env, "cuda", clip_obs=math.inf, clip_actions=1.0)
-    # env.seed(42)
-    # net = Network(env.get_env_info(),cfg1['params']['network']).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-    # obs = env.reset()
+
     model = MainModel(env,cfg1['params'])
-    # model.train_epoch()
-    # for i in range(1):
-    #     model.smoke_loss_test()
 
     if args_cli.train:
         model.train()
@@ -740,27 +733,6 @@ def main():
     entropy loss 확인하기
     """
 
-    step = 0
-    # breakpoint()
-    start_tim = time.time()
-
-    # while step <50:
-    #     for i in range(horizon):
-    #         with torch.inference_mode():
-    #             output = net({'obs':obs})
-    #             print(f"output['value'] : {output['value'].shape}")
-    #             obs,rew,dones,_ = env.step(output["action"])
-    #             print(f"obs {obs.shape},rew{rew.shape},done{dones.shape}")
-    #             rewards_shaper = cfg1["params"]["config"]["reward_shaper"]
-    #         # print(rewards_shaper(rew))
-    #         # obs,_,_,_,_ = env.step(net({'obs':obs['policy']})["action"])
-    #     # env.step(net(net.test())["action"])
-    #     step += 1
-    # print(f"step time: {time.time() - start_tim}")
-
-    # print(net(net.test()))
-
-    # print(net)
     env.close()
 if __name__ == "__main__":
     main()

@@ -120,6 +120,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             checkpoint_file = f"{agent_cfg['params']['config']['name']}.pth"
         # get path to previous checkpoint
         resume_path = get_checkpoint_path(log_root_path, run_dir, checkpoint_file, other_dirs=["nn"])
+        # resume_path = run_dir
     else:
         resume_path = retrieve_file_path(args_cli.checkpoint)
     log_dir = os.path.dirname(os.path.dirname(resume_path))
@@ -189,6 +190,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # note: We simplified the logic in rl-games player.py (:func:`BasePlayer.run()`) function in an
     #   attempt to have complete control over environment stepping. However, this removes other
     #   operations such as masking that is used for multi-agent learning by RL-Games.
+    
     while simulation_app.is_running():
         start_time = time.time()
         # run everything in inference mode
@@ -206,6 +208,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 if agent.is_rnn and agent.states is not None:
                     for s in agent.states:
                         s[:, dones, :] = 0.0
+        timestep += 1
+        if timestep > 5000:
+            print(f"[INFO] Stopping after 5000 steps.{time.time() - start_time}")
+            break   
         if args_cli.video:
             timestep += 1
             # exit the play loop after recording one video

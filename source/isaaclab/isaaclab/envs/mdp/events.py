@@ -27,7 +27,7 @@ from pxr import Gf, Sdf, UsdGeom, Vt
 import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
 from isaaclab.actuators import ImplicitActuator
-from isaaclab.assets import Articulation, DeformableObject, RigidObject
+from isaaclab.assets import Articulation, DeformableObject, RigidObject,RigidObjectCollection
 from isaaclab.managers import EventTermCfg, ManagerTermBase, SceneEntityCfg
 from isaaclab.terrains import TerrainImporter
 
@@ -95,7 +95,6 @@ def randomize_rigid_body_scale(
     stage = omni.usd.get_context().get_stage()
     # resolve prim paths for spawning and cloning
     prim_paths = sim_utils.find_matching_prim_paths(asset.cfg.prim_path)
-
     # sample scale values
     if isinstance(scale_range, dict):
         range_list = [scale_range.get(key, (1.0, 1.0)) for key in ["x", "y", "z"]]
@@ -144,6 +143,67 @@ def randomize_rigid_body_scale(
                     )
                 op_order_spec.default = Vt.TokenArray(["xformOp:translate", "xformOp:orient", "xformOp:scale"])
 
+def randomize_rigid_collection_scale(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    scale_range: tuple[float, float] | dict[str, tuple[float, float]],
+    asset_cfg: SceneEntityCfg,
+):
+    # resolve environment ids
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device="cpu")
+    else:
+        env_ids = env_ids.cpu()
+    """randomize the scale of rigid body collections """
+    asset: RigidObjectCollection = env.scene[asset_cfg.name]
+    stage = omni.usd.get_context().get_stage()
+    # asset._prim_paths
+    # convert to list for the for loop
+    prim_paths = []
+    for prim in asset.prim_paths:
+        if isinstance(scale_range, dict):
+            range_list = [scale_range.get(key, (1.0, 1.0)) for key in ["x", "y", "z"]]
+            ranges = torch.tensor(range_list, device="cpu")
+            rand_samples = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (len(env_ids), 3), device="cpu")
+        else:
+            rand_samples = math_utils.sample_uniform(*scale_range, (len(env_ids), 1), device="cpu")
+            rand_samples = rand_samples.repeat(1, 3)
+        rand_samples = rand_samples.tolist()
+        prim_paths = sim_utils.find_matching_prim_paths(prim)
+
+    # apply the randomization to the parent if no relative child path is provided
+    # this might be useful if user wants to randomize a particular mesh in the prim hierarchy
+    
+
+    # use sdf changeblock for faster processing of USD properties
+        with Sdf.ChangeBlock():
+            for i, env_id in enumerate(env_ids):
+                # path to prim to randomize
+                prim_path = prim_paths[env_id] 
+                # spawn single instance
+                prim_spec = Sdf.CreatePrimInLayer(stage.GetRootLayer(), prim_path)
+
+                # get the attribute to randomize
+                scale_spec = prim_spec.GetAttributeAtPath(prim_path + ".xformOp:scale")
+                # if the scale attribute does not exist, create it
+                has_scale_attr = scale_spec is not None
+                if not has_scale_attr:
+                    scale_spec = Sdf.AttributeSpec(prim_spec, prim_path + ".xformOp:scale", Sdf.ValueTypeNames.Double3)
+
+                # set the new scale
+                scale_spec.default = Gf.Vec3f(*rand_samples[i])
+
+                # ensure the operation is done in the right ordering if we created the scale attribute.
+                # otherwise, we assume the scale attribute is already in the right order.
+                # note: by default isaac sim follows this ordering for the transform stack so any asset
+                #   created through it will have the correct ordering
+                if not has_scale_attr:
+                    op_order_spec = prim_spec.GetAttributeAtPath(prim_path + ".xformOpOrder")
+                    if op_order_spec is None:
+                        op_order_spec = Sdf.AttributeSpec(
+                            prim_spec, UsdGeom.Tokens.xformOpOrder, Sdf.ValueTypeNames.TokenArray
+                        )
+                    op_order_spec.default = Vt.TokenArray(["xformOp:translate", "xformOp:orient", "xformOp:scale"])
 
 class randomize_rigid_body_material(ManagerTermBase):
     """Randomize the physics materials on all geometries of the asset.
@@ -1176,12 +1236,25 @@ def reset_scene_to_default(env: ManagerBasedEnv, env_ids: torch.Tensor):
         deformable_object.write_nodal_state_to_sim(nodal_state, env_ids=env_ids)
     for rigid_objs in env.scene.rigid_object_collections.values():
         default_state = rigid_objs.data.default_object_state[env_ids].clone()
-        # print(default_state[:,:, 0:3].size())
-        # print(default_state.size())
-        # print(env.scene.env_origins[env_ids].unsqueeze(1).expand(-1,20,-1).size())
         default_state[:, :,0:3] += env.scene.env_origins[env_ids].unsqueeze(1).expand(-1,20,-1)
         rigid_objs.write_object_state_to_sim(default_state, env_ids=env_ids)
 
+def randomize_rigid_collection_default_state(env: ManagerBasedEnv, env_ids: torch.Tensor,asset_cfg: SceneEntityCfg,position_range: dict[str ,tuple[float,float]]):
+    """" for start up randomize default state of rigid object collection """
+    range_list = [position_range.get(key, (0.0, 0.0)) for key in ["x", "y"]]
+    range = torch.tensor(range_list,device="cuda:0")
+    for rigid_objs in env.scene.rigid_object_collections.values():
+        default_state = rigid_objs.data.default_object_state[env_ids].clone()
+        print("default_state:",default_state.shape)
+        print('env.origin', env.scene.env_origins[env_ids].shape)
+        # rigid_objs.data.default_object_state[env_ids][:, :,0:3] += math_utils.sample_uniform(range[:,0],range[:,1], default_state[:,:,0:3].shape,default_state.device)
+        default_state[:,:, :,0:2] = math_utils.sample_uniform(range[:,0],range[:,1], default_state[:,:,:,0:2].shape,default_state.device)
+        print('env.origin', env.scene.env_origins[env_ids].unsqueeze(2).expand(-1,-1,20,-1).shape)
+        rigid_objs.data.default_object_state[env_ids] = default_state
+        default_state[:,:, :,0:3] += env.scene.env_origins[env_ids].unsqueeze(2).expand(-1,-1,20,-1)
+        rigid_objs.write_object_state_to_sim(default_state, env_ids=env_ids)
+    
+    pass
 
 class randomize_visual_texture_material(ManagerTermBase):
     """Randomize the visual texture of bodies on an asset using Replicator API.
